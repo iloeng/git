@@ -116,7 +116,7 @@ static struct option builtin_clone_options[] = {
 	OPT_HIDDEN_BOOL(0, "naked", &option_bare,
 			N_("create a bare repository")),
 	OPT_BOOL(0, "mirror", &option_mirror,
-		 N_("create a mirror repository (implies bare)")),
+		 N_("create a mirror repository (implies --bare)")),
 	OPT_BOOL('l', "local", &option_local,
 		N_("to clone from a local repository")),
 	OPT_BOOL(0, "no-hardlinks", &option_no_hardlinks,
@@ -329,7 +329,20 @@ static void copy_or_link_directory(struct strbuf *src, struct strbuf *dest,
 	int src_len, dest_len;
 	struct dir_iterator *iter;
 	int iter_status;
-	struct strbuf realpath = STRBUF_INIT;
+
+	/*
+	 * Refuse copying directories by default which aren't owned by us. The
+	 * code that performs either the copying or hardlinking is not prepared
+	 * to handle various edge cases where an adversary may for example
+	 * racily swap out files for symlinks. This can cause us to
+	 * inadvertently use the wrong source file.
+	 *
+	 * Furthermore, even if we were prepared to handle such races safely,
+	 * creating hardlinks across user boundaries is an inherently unsafe
+	 * operation as the hardlinked files can be rewritten at will by the
+	 * potentially-untrusted user. We thus refuse to do so by default.
+	 */
+	die_upon_dubious_ownership(NULL, NULL, src_repo);
 
 	mkdir_if_missing(dest->buf, 0777);
 
@@ -377,9 +390,27 @@ static void copy_or_link_directory(struct strbuf *src, struct strbuf *dest,
 		if (unlink(dest->buf) && errno != ENOENT)
 			die_errno(_("failed to unlink '%s'"), dest->buf);
 		if (!option_no_hardlinks) {
-			strbuf_realpath(&realpath, src->buf, 1);
-			if (!link(realpath.buf, dest->buf))
+			if (!link(src->buf, dest->buf)) {
+				struct stat st;
+
+				/*
+				 * Sanity-check whether the created hardlink
+				 * actually links to the expected file now. This
+				 * catches time-of-check-time-of-use bugs in
+				 * case the source file was meanwhile swapped.
+				 */
+				if (lstat(dest->buf, &st))
+					die(_("hardlink cannot be checked at '%s'"), dest->buf);
+				if (st.st_mode != iter->st.st_mode ||
+				    st.st_ino != iter->st.st_ino ||
+				    st.st_dev != iter->st.st_dev ||
+				    st.st_size != iter->st.st_size ||
+				    st.st_uid != iter->st.st_uid ||
+				    st.st_gid != iter->st.st_gid)
+					die(_("hardlink different from source at '%s'"), dest->buf);
+
 				continue;
+			}
 			if (option_local > 0)
 				die_errno(_("failed to create link '%s'"), dest->buf);
 			option_no_hardlinks = 1;
@@ -392,8 +423,6 @@ static void copy_or_link_directory(struct strbuf *src, struct strbuf *dest,
 		strbuf_setlen(src, src_len);
 		die(_("failed to iterate over '%s'"), src->buf);
 	}
-
-	strbuf_release(&realpath);
 }
 
 static void clone_local(const char *src_repo, const char *dest_repo)
@@ -738,8 +767,9 @@ static int checkout(int submodule_progress, int filter_submodules)
 	tree = parse_tree_indirect(&oid);
 	if (!tree)
 		die(_("unable to parse commit %s"), oid_to_hex(&oid));
-	parse_tree(tree);
-	init_tree_desc(&t, tree->buffer, tree->size);
+	if (parse_tree(tree) < 0)
+		exit(128);
+	init_tree_desc(&t, &tree->object.oid, tree->buffer, tree->size);
 	if (unpack_trees(1, &t, &opts) < 0)
 		die(_("unable to checkout working tree"));
 
@@ -926,6 +956,7 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 	struct ref *mapped_refs = NULL;
 	const struct ref *ref;
 	struct strbuf key = STRBUF_INIT;
+	struct strbuf buf = STRBUF_INIT;
 	struct strbuf branch_top = STRBUF_INIT, reflog_msg = STRBUF_INIT;
 	struct transport *transport = NULL;
 	const char *src_ref_prefix = "refs/heads/";
@@ -1124,6 +1155,50 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 		free((char *)git_dir);
 		git_dir = real_git_dir;
 	}
+
+	/*
+	 * We have a chicken-and-egg situation between initializing the refdb
+	 * and spawning transport helpers:
+	 *
+	 *   - Initializing the refdb requires us to know about the object
+	 *     format. We thus have to spawn the transport helper to learn
+	 *     about it.
+	 *
+	 *   - The transport helper may want to access the Git repository. But
+	 *     because the refdb has not been initialized, we don't have "HEAD"
+	 *     or "refs/". Thus, the helper cannot find the Git repository.
+	 *
+	 * Ideally, we would have structured the helper protocol such that it's
+	 * mandatory for the helper to first announce its capabilities without
+	 * yet assuming a fully initialized repository. Like that, we could
+	 * have added a "lazy-refdb-init" capability that announces whether the
+	 * helper is ready to handle not-yet-initialized refdbs. If any helper
+	 * didn't support them, we would have fully initialized the refdb with
+	 * the SHA1 object format, but later on bailed out if we found out that
+	 * the remote repository used a different object format.
+	 *
+	 * But we didn't, and thus we use the following workaround to partially
+	 * initialize the repository's refdb such that it can be discovered by
+	 * Git commands. To do so, we:
+	 *
+	 *   - Create an invalid HEAD ref pointing at "refs/heads/.invalid".
+	 *
+	 *   - Create the "refs/" directory.
+	 *
+	 *   - Set up the ref storage format and repository version as
+	 *     required.
+	 *
+	 * This is sufficient for Git commands to discover the Git directory.
+	 */
+	initialize_repository_version(GIT_HASH_UNKNOWN,
+				      the_repository->ref_storage_format, 1);
+
+	strbuf_addf(&buf, "%s/HEAD", git_dir);
+	write_file(buf.buf, "ref: refs/heads/.invalid");
+
+	strbuf_reset(&buf);
+	strbuf_addf(&buf, "%s/refs", git_dir);
+	safe_create_dir(buf.buf, 1);
 
 	/*
 	 * additional config can be injected with -c, make sure it's included
@@ -1453,6 +1528,7 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 	free(remote_name);
 	strbuf_release(&reflog_msg);
 	strbuf_release(&branch_top);
+	strbuf_release(&buf);
 	strbuf_release(&key);
 	free_refs(mapped_refs);
 	free_refs(remote_head_points_at);
@@ -1460,6 +1536,7 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 	free(dir);
 	free(path);
 	free(repo_to_free);
+	UNLEAK(repo);
 	junk_mode = JUNK_LEAVE_ALL;
 
 	transport_ls_refs_options_release(&transport_ls_refs_options);

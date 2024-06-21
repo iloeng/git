@@ -166,7 +166,7 @@ struct strbuf;
 /* Approximation of the length of the decimal representation of this type. */
 #define decimal_length(x)	((int)(sizeof(x) * 2.56 + 0.5) + 1)
 
-#ifdef __MINGW64__
+#if defined(__MINGW32__) || defined(__MINGW64__)
 #define _POSIX_C_SOURCE 1
 #elif defined(__sun__)
  /*
@@ -218,6 +218,18 @@ struct strbuf;
 #endif
 #include <windows.h>
 #define GIT_WINDOWS_NATIVE
+#endif
+
+#if defined(NO_UNIX_SOCKETS) || !defined(GIT_WINDOWS_NATIVE)
+static inline int _have_unix_sockets(void)
+{
+#if defined(NO_UNIX_SOCKETS)
+	return 0;
+#else
+	return 1;
+#endif
+}
+#define have_unix_sockets _have_unix_sockets
 #endif
 
 #include <unistd.h>
@@ -395,6 +407,7 @@ char *gitdirname(char *);
 
 #ifndef NO_OPENSSL
 #ifdef __APPLE__
+#undef __AVAILABILITY_MACROS_USES_AVAILABILITY
 #define __AVAILABILITY_MACROS_USES_AVAILABILITY 0
 #include <AvailabilityMacros.h>
 #undef DEPRECATED_ATTRIBUTE

@@ -32,7 +32,6 @@
 void open_in_gdb(void)
 {
 	static struct child_process cp = CHILD_PROCESS_INIT;
-	extern char *_pgmptr;
 
 	strvec_pushl(&cp.args, "mintty", "gdb", NULL);
 	strvec_pushf(&cp.args, "--pid=%d", getpid());
@@ -334,14 +333,6 @@ int mingw_core_config(const char *var, const char *value,
 	return 0;
 }
 
-static DWORD symlink_file_flags = 0, symlink_directory_flags = 1;
-
-enum phantom_symlink_result {
-	PHANTOM_SYMLINK_RETRY,
-	PHANTOM_SYMLINK_DONE,
-	PHANTOM_SYMLINK_DIRECTORY
-};
-
 static inline int is_wdir_sep(wchar_t wchar)
 {
 	return wchar == L'/' || wchar == L'\\';
@@ -376,6 +367,14 @@ static const wchar_t *make_relative_to(const wchar_t *path,
 	wcscpy(out + i, path);
 	return out;
 }
+
+static DWORD symlink_file_flags = 0, symlink_directory_flags = 1;
+
+enum phantom_symlink_result {
+	PHANTOM_SYMLINK_RETRY,
+	PHANTOM_SYMLINK_DONE,
+	PHANTOM_SYMLINK_DIRECTORY
+};
 
 /*
  * Changes a file symlink to a directory symlink if the target exists and is a
@@ -4155,6 +4154,25 @@ int uname(struct utsname *buf)
 	xsnprintf(buf->version, sizeof(buf->version),
 		  "%u", (v >> 16) & 0x7fff);
 	return 0;
+}
+
+int mingw_have_unix_sockets(void)
+{
+	SC_HANDLE scm, srvc;
+	SERVICE_STATUS_PROCESS status;
+	DWORD bytes;
+	int ret = 0;
+	scm = OpenSCManagerA(NULL, NULL, SC_MANAGER_CONNECT);
+	if (scm) {
+		srvc = OpenServiceA(scm, "afunix", SERVICE_QUERY_STATUS);
+		if (srvc) {
+			if(QueryServiceStatusEx(srvc, SC_STATUS_PROCESS_INFO, (LPBYTE)&status, sizeof(SERVICE_STATUS_PROCESS), &bytes))
+				ret = status.dwCurrentState == SERVICE_RUNNING;
+			CloseServiceHandle(srvc);
+		}
+		CloseServiceHandle(scm);
+	}
+	return ret;
 }
 
 /*

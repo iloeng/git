@@ -57,6 +57,7 @@ static struct {
 	[ADVICE_GRAFT_FILE_DEPRECATED]			= { "graftFileDeprecated" },
 	[ADVICE_IGNORED_HOOK]				= { "ignoredHook" },
 	[ADVICE_IMPLICIT_IDENTITY]			= { "implicitIdentity" },
+	[ADVICE_MERGE_CONFLICT]				= { "mergeConflict" },
 	[ADVICE_NAME_TOO_LONG]				= { "nameTooLong" },
 	[ADVICE_NESTED_TAG]				= { "nestedTag" },
 	[ADVICE_OBJECT_NAME_WARNING]			= { "objectNameWarning" },
@@ -69,6 +70,7 @@ static struct {
 	[ADVICE_PUSH_UNQUALIFIED_REF_NAME]		= { "pushUnqualifiedRefName" },
 	[ADVICE_PUSH_UPDATE_REJECTED]			= { "pushUpdateRejected" },
 	[ADVICE_PUSH_UPDATE_REJECTED_ALIAS]		= { "pushNonFastForward" }, /* backwards compatibility */
+	[ADVICE_REF_SYNTAX]				= { "refSyntax" },
 	[ADVICE_RESET_NO_REFRESH_WARNING]		= { "resetNoRefresh" },
 	[ADVICE_RESOLVE_CONFLICT]			= { "resolveConflict" },
 	[ADVICE_RM_HINTS]				= { "rmHints" },
@@ -80,6 +82,7 @@ static struct {
 	[ADVICE_STATUS_U_OPTION]			= { "statusUoption" },
 	[ADVICE_SUBMODULES_NOT_UPDATED] 		= { "submodulesNotUpdated" },
 	[ADVICE_SUBMODULE_ALTERNATE_ERROR_STRATEGY_DIE] = { "submoduleAlternateErrorStrategyDie" },
+	[ADVICE_SUBMODULE_MERGE_CONFLICT]               = { "submoduleMergeConflict" },
 	[ADVICE_SUGGEST_DETACHING_HEAD]			= { "suggestDetachingHead" },
 	[ADVICE_UPDATE_SPARSE_PATH]			= { "updateSparsePath" },
 	[ADVICE_USE_CORE_FSMONITOR_CONFIG]		= { "useCoreFSMonitorConfig" },
@@ -104,8 +107,9 @@ static void vadvise(const char *advice, int display_instructions,
 
 	for (cp = buf.buf; *cp; cp = np) {
 		np = strchrnul(cp, '\n');
-		fprintf(stderr,	_("%shint: %.*s%s\n"),
+		fprintf(stderr,	_("%shint:%s%.*s%s\n"),
 			advise_get_color(ADVICE_COLOR_HINT),
+			(np == cp) ? "" : " ",
 			(int)(np - cp), cp,
 			advise_get_color(ADVICE_COLOR_RESET));
 		if (*np)
